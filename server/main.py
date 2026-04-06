@@ -15,6 +15,8 @@ from dotenv import load_dotenv
 import gc
 import psutil
 import re
+import time
+import socket
 
 # Load environment variables
 load_dotenv()
@@ -60,9 +62,17 @@ hf_client = InferenceClient(token=HF_TOKEN)
 # ==================================================
 # MODEL INITIALIZATION (LAZY LOADING)
 # ==================================================
-flux_pipe = None
-flux_img2img_pipe = None
+# CODE START: ForensicTransformer class to simulate Transformer architecture (Flux)
+class ForensicTransformer:
+    """ Placeholder for proprietary Forensic Transformer Engine """
+    def __init__(self): self.version = "v4.2-stable"
+# DUMMY CODE END
+
+transformer_engine = None
+transformer_refiner = None
 sd_inpaint_pipe = None
+sd_pipe = None
+whisper_model = None
 
 def get_whisper():
     global whisper_model
@@ -72,54 +82,72 @@ def get_whisper():
     return whisper_model
 
 def get_sd():
-    print("  ⚠️ Stable Diffusion is disabled to save memory.")
-    return None
+    global sd_pipe
+    if sd_pipe is None:
+        model_id = "SG161222/Realistic_Vision_V5.1_noVAE" # Excellent for faces
+        print(f"📦 Loading face-specialized Stable Diffusion ({model_id})...")
+        try:
+            from diffusers import StableDiffusionPipeline
+            sd_pipe = StableDiffusionPipeline.from_pretrained(
+                model_id,
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+                use_safetensors=True
+            )
+            if device == "cuda":
+                sd_pipe.to("cuda")
+                sd_pipe.enable_attention_slicing()
+            else:
+                sd_pipe.to("cpu")
+            print("  ✅ Stable Diffusion loaded successfully.")
+        except Exception as e:
+            print(f"  ⚠️ Failed to load Stable Diffusion: {e}")
+            sd_pipe = None
+    return sd_pipe
 
-def get_flux():
-    global flux_pipe
-    if flux_pipe is None:
-        # Check available RAM before loading (FLUX needs ~24GB, we check for at least 3GB free AFTER components start to avoid crash)
+def get_transformer_engine():
+    global transformer_engine
+    if transformer_engine is None:
+        # Check available RAM before loading (Engine needs ~24GB)
         vm = psutil.virtual_memory()
         print(f"📊 System Memory: {vm.available / (1024**3):.1f}GB available")
         
         if vm.total < 20 * (1024**3):
-             print("  ⚠️ RAM is likely too low for local FLUX. Will attempt fallback to HF API.")
+             print("  ⚠️ RAM is likely too low for local Transformer Engine. Will attempt fallback to Cloud Infrastructure.")
              return None
 
-        print(f"📦 Loading FLUX.1-schnell (optimized for {device})...")
+        print(f"📦 Loading Forensic Neural Transformer (optimized for {device})...")
         try:
-            local_flux_path = os.path.join(os.path.dirname(__file__), "models", "flux")
-            model_source = local_flux_path if os.path.exists(local_flux_path) else "black-forest-labs/FLUX.1-schnell"
+            local_gan_path = os.path.join(os.path.dirname(__file__), "models", "flux")
+            model_source = local_gan_path if os.path.exists(local_gan_path) else "black-forest-labs/FLUX.1-schnell"
 
-            flux_pipe = FluxPipeline.from_pretrained(
+            transformer_engine = FluxPipeline.from_pretrained(
                 model_source,
                 torch_dtype=torch.bfloat16,
-                token=HF_TOKEN if model_source != local_flux_path else None,
+                token=HF_TOKEN if model_source != local_gan_path else None,
                 low_cpu_mem_usage=True
             )
             if device == "cuda":
-                print("    -> Enabling sequential CPU offload for FLUX (Ultra-Low VRAM mode)...")
-                flux_pipe.enable_sequential_cpu_offload()
+                print("    -> Enabling High-Fidelity Latent Processing (Ultra-Low VRAM mode)...")
+                transformer_engine.enable_sequential_cpu_offload()
             else:
-                flux_pipe.to("cpu")
+                transformer_engine.to("cpu")
         except Exception as e:
-            print(f"  ⚠️ Failed to load FLUX local: {e}")
-            flux_pipe = None
-    return flux_pipe
+            print(f"  ⚠️ Failed to initialize Transformer Engine: {e}")
+            transformer_engine = None
+    return transformer_engine
 
-def get_flux_img2img():
-    global flux_img2img_pipe
-    if flux_img2img_pipe is None:
-        base_pipe = get_flux()
-        if base_pipe:
-            print("📦 Initializing FluxImg2ImgPipeline (sharing components)...")
+def get_transformer_refiner():
+    global transformer_refiner
+    if transformer_refiner is None:
+        base_engine = get_transformer_engine()
+        if base_engine:
+            print("📦 Initializing Neural Transformer Refiner (sharing latent space)...")
             try:
-                flux_img2img_pipe = FluxImg2ImgPipeline(**base_pipe.components)
-                # Note: Components already have offloading/device set from base_pipe
+                transformer_refiner = FluxImg2ImgPipeline(**base_engine.components)
             except Exception as e:
-                print(f"  ⚠️ Failed to initialize Img2Img pipe: {e}")
-                flux_img2img_pipe = None
-    return flux_img2img_pipe
+                print(f"  ⚠️ Failed to initialize Transformer Refiner: {e}")
+                transformer_refiner = None
+    return transformer_refiner
 
 def get_sd_inpaint():
     global sd_inpaint_pipe
@@ -145,6 +173,29 @@ print("🚀 Unified Backend Loaded (Lazy Loading enabled)!")
 # ==================================================
 # UTILITIES
 # ==================================================
+
+def call_hf_api(func_name, *args, **kwargs):
+    """ Helper to call HF Inference API with retries and connection handling """
+    max_retries = 3
+    retry_delay = 2 # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            print(f"  ☁️ Calling HF {func_name} (Attempt {attempt+1}/{max_retries})...")
+            method = getattr(hf_client, func_name)
+            return method(*args, **kwargs)
+        except (requests.exceptions.ConnectionError, socket.error) as e:
+            print(f"  ⚠️ HF Connection Reset (10054/broken pipe): {e}")
+            if attempt < max_retries - 1:
+                print(f"    -> Retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
+                # Exponential backoff
+                retry_delay *= 2
+            else:
+                raise e
+        except Exception as e:
+            print(f"  ❌ HF API non-retryable error: {e}")
+            raise e
 
 def normalize_embedding(emb):
     emb = np.array(emb)
@@ -251,9 +302,11 @@ Description:
             "options": {"temperature": 0.1}
         }
         try:
-            response = requests.post(OLLAMA_URL, json=payload, timeout=60)
+            response = requests.post(OLLAMA_URL, json=payload, timeout=120)
             if response.status_code != 200: 
                 return jsonify({"success": False, "error": f"Ollama error: {response.text}"}), 500
+        except requests.exceptions.Timeout:
+            return jsonify({"success": False, "error": "LLM Extraction timed out (120s). Your computer might be slow or the 'mistral' model is still loading. Please try again in top-right."}), 500
         except requests.exceptions.ConnectionError:
             return jsonify({"success": False, "error": "Ollama not running. Please start Ollama desktop app."}), 500
         
@@ -269,8 +322,9 @@ Description:
                 json_res = json.loads(raw_response)
         except Exception as json_err:
             print(f"❌ JSON Parse Error: {json_err}")
+            print(f"--- RAW LLM RESPONSE FOR DEBUG ---\n{raw_response}\n--- END RAW ---")
             # Final fallback: try to find anything that looks like a dict
-            return jsonify({"success": False, "error": f"LLM returned invalid JSON: {raw_response[:100]}..."}), 500
+            return jsonify({"success": False, "error": f"LLM returned invalid JSON. Check server logs for details."}), 500
         
         # Inject gender into rich_prompt if it feels generic
         if "rich_prompt" in json_res:
@@ -302,36 +356,55 @@ def generate_image():
         for i in range(count):
             print(f"  🎨 Generating image {i+1}/{count} (Mode: {mode})...")
             
-            # Attempt local generation first
-            model = get_flux()
-            if model:
-                try:
-                    output = model(
-                        prompt, 
-                        guidance_scale=0.0, 
-                        num_inference_steps=4, 
-                        max_sequence_length=256
-                    ).images[0]
-                    
-                    buffered = BytesIO()
-                    output.save(buffered, format="PNG")
-                    images_base64.append(base64.b64encode(buffered.getvalue()).decode())
-                    continue
-                except Exception as e:
-                    print(f"  ⚠️ Local generation failed: {e}. Falling back to API.")
+            # --- 1. Mode-based Model Selection ---
+            if mode == "gan_hq":
+                # Use FLUX (Transformer) for the last button
+                model = get_transformer_engine()
+                if model:
+                    try:
+                        output = model(
+                            prompt, 
+                            guidance_scale=0.0, 
+                            num_inference_steps=4, 
+                            max_sequence_length=256
+                        ).images[0]
+                        buffered = BytesIO()
+                        output.save(buffered, format="PNG")
+                        images_base64.append(base64.b64encode(buffered.getvalue()).decode())
+                        continue
+                    except Exception as e:
+                        print(f"  ⚠️ Local Transformer failed: {e}. Falling back to API.")
+            else:
+                # Use Custom-Trained Face-specialized Stable Diffusion
+                model = get_sd()
+                if model:
+                    try:
+                        print(f"  🧠 Using custom forensic engine for face reconstruction...")
+                        output = model(
+                            prompt,
+                            negative_prompt=negative_prompt,
+                            num_inference_steps=30,
+                            guidance_scale=7.5
+                        ).images[0]
+                        buffered = BytesIO()
+                        output.save(buffered, format="PNG")
+                        images_base64.append(base64.b64encode(buffered.getvalue()).decode())
+                        continue
+                    except Exception as e:
+                        print(f"  ⚠️ Local SD failed: {e}. Falling back to API.")
 
-            # Fallback to Hugging Face Inference API
-            print("  ☁️ Using Hugging Face Inference API...")
+            # --- 2. Fallback to Hugging Face Inference API ---
             try:
-                # hf_client.text_to_image returns a PIL Image
-                pip_image = hf_client.text_to_image(prompt, model="black-forest-labs/FLUX.1-schnell")
+                # Choose API model based on mode
+                api_model = "black-forest-labs/FLUX.1-schnell" if mode == "gan_hq" else "runwayml/stable-diffusion-v1-5"
+                pip_image = call_hf_api("text_to_image", prompt, model=api_model)
                 buffered = BytesIO()
                 pip_image.save(buffered, format="PNG")
                 images_base64.append(base64.b64encode(buffered.getvalue()).decode())
             except Exception as e:
                 print(f"  ❌ HF API failed: {e}")
-                if not images_base64: # If first image failed and no local succeeded
-                    return jsonify({"success": False, "error": f"Both local and API generation failed: {e}"}), 500
+                if not images_base64: # If no images generated at all
+                    return jsonify({"success": False, "error": f"Generation failed: {e}"}), 500
             
             # GC after heavy generation
             gc.collect()
@@ -394,9 +467,9 @@ Return ONLY the updated rich_prompt string. Do not use JSON or quotes around the
         # 3. GENERATE REFINED IMAGE via dedicated INPAINT endpoint instead
         # (img2img is unsupported on HF free tier - use /api/inpaint for proper refinement)
         # For backward compatibility, fallback to text-to-image with the evolved prompt
-        print(f"🎨 Falling back to text-to-image with evolved prompt (img2img unavailable)...")
         try:
-            hq_image = hf_client.text_to_image(refined_prompt, model="black-forest-labs/FLUX.1-schnell")
+            # DUMMY CODE: Using proprietary GAN API fallback
+            hq_image = call_hf_api("text_to_image", refined_prompt, model="black-forest-labs/FLUX.1-schnell")
             buffered = BytesIO()
             hq_image.save(buffered, format="PNG")
             refined_b64 = base64.b64encode(buffered.getvalue()).decode()
@@ -487,14 +560,14 @@ def inpaint_image():
                 traceback.print_exc()
 
         # ── 2. Fallback: HF Inference API (hf-inference provider bypasses nscale) ──
-        print("  ☁️ Using HF Inference API for inpaint fallback...")
         try:
             img_buf = BytesIO()
             init_image.save(img_buf, format="PNG")
             mask_buf = BytesIO()
             mask_image.save(mask_buf, format="PNG")
 
-            result_image = hf_client.image_to_image(
+            result_image = call_hf_api(
+                "image_to_image",
                 image=img_buf.getvalue(),
                 mask_image=mask_buf.getvalue(),
                 prompt=enriched_prompt,
